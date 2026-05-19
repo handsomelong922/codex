@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,7 @@ type Record struct {
 	Failed           bool
 	Fail             Failure
 	Detail           Detail
+	ResponseHeaders  http.Header
 }
 
 // Failure holds HTTP failure metadata for an upstream request attempt.

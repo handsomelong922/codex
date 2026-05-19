@@ -105,6 +105,7 @@ func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequ
 func RecordAPIResponseMetadata(ctx context.Context, cfg *config.Config, status int, headers http.Header) {
 	ginCtx := ginContextFrom(ctx)
 	markAPIResponseTimestamp(ginCtx)
+	logging.SetResponseHeaders(ctx, headers)
 	if cfg == nil || !cfg.RequestLog {
 		return
 	}
@@ -233,6 +234,7 @@ func RecordAPIWebsocketRequest(ctx context.Context, cfg *config.Config, info Ups
 func RecordAPIWebsocketHandshake(ctx context.Context, cfg *config.Config, status int, headers http.Header) {
 	ginCtx := ginContextFrom(ctx)
 	markAPIResponseTimestamp(ginCtx)
+	logging.SetResponseHeaders(ctx, headers)
 	if cfg == nil || !cfg.RequestLog {
 		return
 	}
@@ -255,6 +257,7 @@ func RecordAPIWebsocketHandshake(ctx context.Context, cfg *config.Config, status
 
 // RecordAPIWebsocketUpgradeRejection stores a rejected websocket upgrade as an HTTP attempt.
 func RecordAPIWebsocketUpgradeRejection(ctx context.Context, cfg *config.Config, info UpstreamRequestLog, status int, headers http.Header, body []byte) {
+	logging.SetResponseHeaders(ctx, headers)
 	if cfg == nil || !cfg.RequestLog {
 		return
 	}
