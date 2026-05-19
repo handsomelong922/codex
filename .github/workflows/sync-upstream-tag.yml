@@ -34,6 +34,8 @@ jobs:
         run: |
           set -euo pipefail
 
+          protected_files=(README.md CLAUDE.md)
+
           if [ -z "${PAT_TOKEN}" ]; then
             echo "::error::PAT_TOKEN secret is required to push tags and trigger release workflows."
             exit 1
@@ -59,25 +61,33 @@ jobs:
           else
             if ! git merge --no-edit "${upstream_commit}"; then
               conflicted_files="$(git diff --name-only --diff-filter=U)"
-              if [ "${conflicted_files}" = "README.md" ]; then
-                git checkout origin/main -- README.md
-                git add README.md
+              unprotected_conflicts="$(printf '%s\n' "${conflicted_files}" | grep -Ev '^(README\.md|CLAUDE\.md)$' || true)"
+              if [ -z "${unprotected_conflicts}" ]; then
+                git checkout origin/main -- "${protected_files[@]}"
+                git add "${protected_files[@]}"
                 git commit --no-edit
-                echo "Resolved README.md conflict by keeping origin/main version."
+                echo "Resolved protected documentation conflicts by keeping origin/main versions."
               else
-                echo "::error::Upstream merge failed with non-README conflicts:"
+                echo "::error::Upstream merge failed with non-protected-file conflicts:"
                 printf '%s\n' "${conflicted_files}"
                 exit 1
               fi
             fi
 
-            if git diff --quiet HEAD origin/main -- README.md; then
-              echo "README.md unchanged by upstream sync."
-            else
-              git checkout origin/main -- README.md
-              git add README.md
+            changed_protected_files=()
+            for protected_file in "${protected_files[@]}"; do
+              if git diff --quiet HEAD origin/main -- "${protected_file}"; then
+                echo "${protected_file} unchanged by upstream sync."
+              else
+                changed_protected_files+=("${protected_file}")
+              fi
+            done
+
+            if [ "${#changed_protected_files[@]}" -gt 0 ]; then
+              git checkout origin/main -- "${changed_protected_files[@]}"
+              git add "${changed_protected_files[@]}"
               git commit --amend --no-edit
-              echo "Restored README.md from origin/main after upstream sync."
+              echo "Restored protected documentation files from origin/main after upstream sync: ${changed_protected_files[*]}"
             fi
           fi
 
