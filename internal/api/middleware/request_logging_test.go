@@ -145,7 +145,7 @@ func TestShouldCaptureRequestBody(t *testing.T) {
 	}
 }
 
-func TestAttachWebsocketLogSourcesUsesLoggerLogsDir(t *testing.T) {
+func TestAttachRequestLogSourcesUsesLoggerLogsDir(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	logsDir := t.TempDir()
@@ -155,7 +155,7 @@ func TestAttachWebsocketLogSourcesUsesLoggerLogsDir(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
 	c.Request.Header.Set("Upgrade", "websocket")
 
-	attachWebsocketLogSources(c, logger, true)
+	attachRequestLogSources(c, logger, true)
 	defer cleanupFileBodySourcesFromContext(c)
 
 	websocketSource, websocketOK := requestlogctx.WebsocketTimelineSource(c)

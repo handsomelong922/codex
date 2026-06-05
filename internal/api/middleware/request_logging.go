@@ -59,7 +59,7 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 			wrapper.logOnErrorOnly = true
 		}
 		c.Writer = wrapper
-		attachWebsocketLogSources(c, logger, loggerEnabled)
+		attachRequestLogSources(c, logger, loggerEnabled)
 
 		// Process the request
 		c.Next()
@@ -72,7 +72,20 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 	}
 }
 
-func attachWebsocketLogSources(c *gin.Context, logger logging.RequestLogger, loggerEnabled bool) {
+func attachRequestLogSources(c *gin.Context, logger logging.RequestLogger, loggerEnabled bool) {
+	if c == nil || !loggerEnabled {
+		return
+	}
+	factory, ok := logger.(requestlogctx.FileBodySourceFactory)
+	if !ok || factory == nil {
+		return
+	}
+	if source, errSource := factory.NewFileBodySource("api-request"); errSource == nil {
+		c.Set(logging.APIRequestSourceContextKey, source)
+	}
+	if source, errSource := factory.NewFileBodySource("api-response"); errSource == nil {
+		c.Set(logging.APIResponseSourceContextKey, source)
+	}
 	requestlogctx.AttachResponsesWebsocketSources(c, logger, loggerEnabled)
 }
 

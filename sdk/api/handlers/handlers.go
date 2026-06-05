@@ -448,6 +448,12 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 			logging.SetResponseStatus(cancelCtx, c.Writer.Status())
 		}
 		if h.Cfg.RequestLog && len(params) == 1 {
+			if captured, exists := c.Get(logging.APIResponseCapturedContextKey); exists {
+				if capturedBool, ok := captured.(bool); ok && capturedBool {
+					cancel()
+					return
+				}
+			}
 			if existingBytes := requestlogctx.APIResponse(c); len(bytes.TrimSpace(existingBytes)) > 0 {
 				switch params[0].(type) {
 				case error, string:
