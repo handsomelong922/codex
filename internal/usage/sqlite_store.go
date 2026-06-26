@@ -94,12 +94,15 @@ func (s *SQLiteStore) initSchema(ctx context.Context) error {
 	first_byte_latency_ms INTEGER NOT NULL DEFAULT 0 CHECK (first_byte_latency_ms >= 0),
 	generation_ms INTEGER NOT NULL DEFAULT 0 CHECK (generation_ms >= 0),
 	thinking_effort TEXT NOT NULL DEFAULT '',
+	service_tier TEXT NOT NULL DEFAULT '',
 	input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
 	output_tokens INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
 	reasoning_tokens INTEGER NOT NULL DEFAULT 0 CHECK (reasoning_tokens >= 0),
 	cached_tokens INTEGER NOT NULL DEFAULT 0 CHECK (cached_tokens >= 0),
 	total_tokens INTEGER NOT NULL DEFAULT 0 CHECK (total_tokens >= 0),
-	failed INTEGER NOT NULL DEFAULT 0 CHECK (failed IN (0, 1))
+	failed INTEGER NOT NULL DEFAULT 0 CHECK (failed IN (0, 1)),
+	fail_status_code INTEGER NOT NULL DEFAULT 0 CHECK (fail_status_code >= 0),
+	fail_body TEXT NOT NULL DEFAULT ''
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_records_timestamp ON usage_records(timestamp)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_records_api_model ON usage_records(api_key, endpoint, provider, model)`,
@@ -109,7 +112,61 @@ func (s *SQLiteStore) initSchema(ctx context.Context) error {
 			return fmt.Errorf("usage sqlite init schema: %w", err)
 		}
 	}
+	return s.migrateSchema(ctx)
+}
+
+// migrateSchema adds columns introduced after the original schema so databases
+// created by older versions keep working. SQLite cannot add a column twice, so
+// each addition is guarded by the current table_info column set.
+func (s *SQLiteStore) migrateSchema(ctx context.Context) error {
+	existing, err := s.existingColumns(ctx)
+	if err != nil {
+		return err
+	}
+	additions := []struct {
+		name string
+		ddl  string
+	}{
+		{name: "service_tier", ddl: `ALTER TABLE usage_records ADD COLUMN service_tier TEXT NOT NULL DEFAULT ''`},
+		{name: "fail_status_code", ddl: `ALTER TABLE usage_records ADD COLUMN fail_status_code INTEGER NOT NULL DEFAULT 0`},
+		{name: "fail_body", ddl: `ALTER TABLE usage_records ADD COLUMN fail_body TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, addition := range additions {
+		if _, ok := existing[addition.name]; ok {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, addition.ddl); err != nil {
+			return fmt.Errorf("usage sqlite migrate add %s: %w", addition.name, err)
+		}
+	}
 	return nil
+}
+
+func (s *SQLiteStore) existingColumns(ctx context.Context) (map[string]struct{}, error) {
+	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info(usage_records)")
+	if err != nil {
+		return nil, fmt.Errorf("usage sqlite table_info: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	columns := make(map[string]struct{})
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			ctype     string
+			notNull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dfltValue, &pk); err != nil {
+			return nil, fmt.Errorf("usage sqlite table_info scan: %w", err)
+		}
+		columns[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("usage sqlite table_info rows: %w", err)
+	}
+	return columns, nil
 }
 
 func (s *SQLiteStore) Insert(ctx context.Context, record Record) error {
@@ -126,9 +183,9 @@ func (s *SQLiteStore) Insert(ctx context.Context, record Record) error {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO usage_records (
 	id, timestamp, api_key, provider, model, source, auth_index, auth_type, endpoint, request_id,
-	latency_ms, first_byte_latency_ms, generation_ms, thinking_effort,
-	input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, failed
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	latency_ms, first_byte_latency_ms, generation_ms, thinking_effort, service_tier,
+	input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, failed, fail_status_code, fail_body
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		strings.TrimSpace(record.ID),
 		formatSQLiteRecordTimestamp(record.Timestamp),
@@ -144,12 +201,15 @@ INSERT INTO usage_records (
 		nonNegative(record.FirstByteLatencyMs),
 		nonNegative(record.GenerationMs),
 		strings.TrimSpace(record.ThinkingEffort),
+		strings.TrimSpace(record.ServiceTier),
 		tokens.InputTokens,
 		tokens.OutputTokens,
 		tokens.ReasoningTokens,
 		tokens.CachedTokens,
 		tokens.TotalTokens,
 		boolToInt(record.Failed),
+		nonNegativeInt(record.FailStatusCode),
+		strings.TrimSpace(record.FailBody),
 	)
 	if err != nil {
 		return fmt.Errorf("usage sqlite insert: %w", err)
@@ -162,9 +222,9 @@ func (s *SQLiteStore) Query(ctx context.Context, rng QueryRange) (APIUsage, erro
 		return APIUsage{}, nil
 	}
 	query := `
-SELECT id, timestamp, api_key, endpoint, provider, model, source, auth_index, thinking_effort,
+SELECT id, timestamp, api_key, endpoint, provider, model, source, auth_index, thinking_effort, service_tier,
        latency_ms, first_byte_latency_ms, generation_ms,
-       input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, failed
+       input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, failed, fail_status_code, fail_body
 FROM usage_records`
 	args := make([]any, 0, 2)
 	where := make([]string, 0, 2)
@@ -206,6 +266,7 @@ FROM usage_records`
 			&detail.Source,
 			&detail.AuthIndex,
 			&detail.ThinkingEffort,
+			&detail.ServiceTier,
 			&detail.LatencyMs,
 			&detail.FirstByteLatencyMs,
 			&detail.GenerationMs,
@@ -215,6 +276,8 @@ FROM usage_records`
 			&detail.Tokens.CachedTokens,
 			&detail.Tokens.TotalTokens,
 			&failedInt,
+			&detail.FailStatusCode,
+			&detail.FailBody,
 		); err != nil {
 			return nil, fmt.Errorf("usage sqlite scan: %w", err)
 		}
@@ -328,6 +391,13 @@ func nonNegativeTokenStats(tokens TokenStats) TokenStats {
 }
 
 func nonNegative(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func nonNegativeInt(value int) int {
 	if value < 0 {
 		return 0
 	}

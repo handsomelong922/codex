@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -113,6 +114,7 @@ func TestSQLiteStoreInsertQueryAndDelete(t *testing.T) {
 		FirstByteLatencyMs: 320,
 		GenerationMs:       1480,
 		ThinkingEffort:     "high",
+		ServiceTier:        "priority",
 		Tokens: TokenStats{
 			InputTokens:     300,
 			OutputTokens:    500,
@@ -120,7 +122,9 @@ func TestSQLiteStoreInsertQueryAndDelete(t *testing.T) {
 			CachedTokens:    100,
 			TotalTokens:     860,
 		},
-		Failed: false,
+		Failed:         false,
+		FailStatusCode: 0,
+		FailBody:       "",
 	}
 	if err := store.Insert(ctx, record); err != nil {
 		t.Fatalf("Insert() error = %v", err)
@@ -137,6 +141,9 @@ func TestSQLiteStoreInsertQueryAndDelete(t *testing.T) {
 	got := details[0]
 	if got.ID != "record-1" || !got.Timestamp.Equal(at) || got.LatencyMs != 1800 || got.FirstByteLatencyMs != 320 || got.GenerationMs != 1480 || got.ThinkingEffort != "high" {
 		t.Fatalf("detail = %+v", got)
+	}
+	if got.ServiceTier != "priority" {
+		t.Fatalf("service tier = %q, want priority", got.ServiceTier)
 	}
 	if got.Source != "user@example.com" || got.AuthIndex != "0" || got.Failed {
 		t.Fatalf("detail metadata = %+v", got)
@@ -323,6 +330,132 @@ func TestSQLiteStoreNormalizesInsertedRecord(t *testing.T) {
 	}
 	if negativeTokenDetails[0].Tokens != (TokenStats{}) {
 		t.Fatalf("negative tokens = %+v, want all zero", negativeTokenDetails[0].Tokens)
+	}
+}
+
+func TestSQLiteStorePersistsFailureMetadata(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteStore(t)
+
+	record := Record{
+		ID:             "failure-record",
+		Timestamp:      time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC),
+		APIKey:         "sk-fail",
+		Model:          "gpt-5.4",
+		ServiceTier:    "default",
+		Failed:         true,
+		FailStatusCode: 429,
+		FailBody:       "rate limited",
+	}
+	if err := store.Insert(ctx, record); err != nil {
+		t.Fatalf("Insert() error = %v", err)
+	}
+
+	usage, err := store.Query(ctx, QueryRange{})
+	if err != nil {
+		t.Fatalf("Query() error = %v", err)
+	}
+	details := usage["sk-fail"]["gpt-5.4"]
+	if len(details) != 1 {
+		t.Fatalf("details len = %d, want 1", len(details))
+	}
+	got := details[0]
+	if !got.Failed || got.FailStatusCode != 429 || got.FailBody != "rate limited" || got.ServiceTier != "default" {
+		t.Fatalf("failure detail = %+v", got)
+	}
+}
+
+func TestSQLiteStoreMigratesLegacySchema(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+
+	// Create a database carrying the original schema (without service_tier,
+	// fail_status_code, fail_body) and a legacy row, then reopen it through
+	// NewSQLiteStore to exercise the ALTER-based migration path.
+	legacy, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	if _, err := legacy.ExecContext(ctx, `CREATE TABLE usage_records (
+	id TEXT PRIMARY KEY,
+	timestamp TEXT NOT NULL,
+	api_key TEXT NOT NULL DEFAULT '',
+	provider TEXT NOT NULL DEFAULT '',
+	model TEXT NOT NULL DEFAULT '',
+	source TEXT NOT NULL DEFAULT '',
+	auth_index TEXT NOT NULL DEFAULT '',
+	auth_type TEXT NOT NULL DEFAULT '',
+	endpoint TEXT NOT NULL DEFAULT '',
+	request_id TEXT NOT NULL DEFAULT '',
+	latency_ms INTEGER NOT NULL DEFAULT 0,
+	first_byte_latency_ms INTEGER NOT NULL DEFAULT 0,
+	generation_ms INTEGER NOT NULL DEFAULT 0,
+	thinking_effort TEXT NOT NULL DEFAULT '',
+	input_tokens INTEGER NOT NULL DEFAULT 0,
+	output_tokens INTEGER NOT NULL DEFAULT 0,
+	reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+	cached_tokens INTEGER NOT NULL DEFAULT 0,
+	total_tokens INTEGER NOT NULL DEFAULT 0,
+	failed INTEGER NOT NULL DEFAULT 0
+)`); err != nil {
+		t.Fatalf("create legacy schema error = %v", err)
+	}
+	if _, err := legacy.ExecContext(ctx, `INSERT INTO usage_records
+	(id, timestamp, api_key, model, total_tokens, failed)
+	VALUES ('legacy-1', '2026-05-02T12:00:00.000000000Z', 'sk-legacy', 'gpt-5.4', 5, 0)`); err != nil {
+		t.Fatalf("insert legacy row error = %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy db error = %v", err)
+	}
+
+	store, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	// Legacy row is still readable with defaulted new columns.
+	usage, err := store.Query(ctx, QueryRange{})
+	if err != nil {
+		t.Fatalf("Query() legacy error = %v", err)
+	}
+	legacyDetails := usage["sk-legacy"]["gpt-5.4"]
+	if len(legacyDetails) != 1 {
+		t.Fatalf("legacy details len = %d, want 1", len(legacyDetails))
+	}
+	if legacyDetails[0].ServiceTier != "" || legacyDetails[0].FailStatusCode != 0 || legacyDetails[0].FailBody != "" {
+		t.Fatalf("legacy detail new columns = %+v, want zero values", legacyDetails[0])
+	}
+
+	// New rows can use the migrated columns.
+	if err := store.Insert(ctx, Record{
+		ID:             "migrated-1",
+		Timestamp:      time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC),
+		APIKey:         "sk-legacy",
+		Model:          "gpt-5.4",
+		ServiceTier:    "priority",
+		Failed:         true,
+		FailStatusCode: 500,
+		FailBody:       "boom",
+	}); err != nil {
+		t.Fatalf("Insert() migrated error = %v", err)
+	}
+	usage, err = store.Query(ctx, QueryRange{})
+	if err != nil {
+		t.Fatalf("Query() migrated error = %v", err)
+	}
+	var migrated *RequestDetail
+	for i := range usage["sk-legacy"]["gpt-5.4"] {
+		if usage["sk-legacy"]["gpt-5.4"][i].ID == "migrated-1" {
+			migrated = &usage["sk-legacy"]["gpt-5.4"][i]
+		}
+	}
+	if migrated == nil {
+		t.Fatalf("migrated row not found: %+v", usage)
+	}
+	if migrated.ServiceTier != "priority" || migrated.FailStatusCode != 500 || migrated.FailBody != "boom" {
+		t.Fatalf("migrated detail = %+v", migrated)
 	}
 }
 

@@ -149,6 +149,7 @@ func normalizeRecord(ctx context.Context, record coreusage.Record) Record {
 		FirstByteLatencyMs: firstByteMs,
 		GenerationMs:       nonNegative(latencyMs - firstByteMs),
 		ThinkingEffort:     strings.TrimSpace(record.ReasoningEffort),
+		ServiceTier:        strings.TrimSpace(record.ServiceTier),
 		Tokens: TokenStats{
 			InputTokens:     detail.InputTokens,
 			OutputTokens:    detail.OutputTokens,
@@ -156,7 +157,9 @@ func normalizeRecord(ctx context.Context, record coreusage.Record) Record {
 			CachedTokens:    detail.CachedTokens,
 			TotalTokens:     normalizeCoreTotal(detail),
 		},
-		Failed: resolveFailed(ctx, record),
+		Failed:         resolveFailed(ctx, record),
+		FailStatusCode: record.Fail.StatusCode,
+		FailBody:       strings.TrimSpace(record.Fail.Body),
 	}
 }
 

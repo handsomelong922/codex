@@ -28,8 +28,11 @@ type Record struct {
 	FirstByteLatencyMs int64
 	GenerationMs       int64
 	ThinkingEffort     string
+	ServiceTier        string
 	Tokens             TokenStats
 	Failed             bool
+	FailStatusCode     int
+	FailBody           string
 }
 
 type RequestDetail struct {
@@ -41,8 +44,11 @@ type RequestDetail struct {
 	Source             string     `json:"source"`
 	AuthIndex          string     `json:"auth_index"`
 	ThinkingEffort     string     `json:"thinking_effort"`
+	ServiceTier        string     `json:"service_tier"`
 	Tokens             TokenStats `json:"tokens"`
 	Failed             bool       `json:"failed"`
+	FailStatusCode     int        `json:"fail_status_code,omitempty"`
+	FailBody           string     `json:"fail_body,omitempty"`
 }
 
 type APIUsage map[string]map[string][]RequestDetail

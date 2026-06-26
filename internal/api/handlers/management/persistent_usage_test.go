@@ -70,6 +70,7 @@ func TestGetUsageStatisticsReturnsSimplifiedShape(t *testing.T) {
 		FirstByteLatencyMs: 200,
 		GenerationMs:       1050,
 		ThinkingEffort:     "high",
+		ServiceTier:        "priority",
 		Tokens: usage.TokenStats{
 			InputTokens:     10,
 			OutputTokens:    20,
@@ -77,6 +78,9 @@ func TestGetUsageStatisticsReturnsSimplifiedShape(t *testing.T) {
 			CachedTokens:    4,
 			TotalTokens:     33,
 		},
+		Failed:         true,
+		FailStatusCode: 429,
+		FailBody:       "rate limited",
 	}); err != nil {
 		t.Fatalf("insert usage record: %v", err)
 	}
@@ -109,6 +113,15 @@ func TestGetUsageStatisticsReturnsSimplifiedShape(t *testing.T) {
 	detail := details[0]
 	if detail.ID != "record-1" || !detail.Timestamp.Equal(timestamp) || detail.LatencyMs != 1250 || detail.FirstByteLatencyMs != 200 || detail.GenerationMs != 1050 || detail.ThinkingEffort != "high" {
 		t.Fatalf("detail = %+v", detail)
+	}
+	if detail.ServiceTier != "priority" || !detail.Failed || detail.FailStatusCode != 429 || detail.FailBody != "rate limited" {
+		t.Fatalf("detail service tier / failure fields = %+v", detail)
+	}
+	// The exposed JSON must carry the new field names.
+	for _, field := range []string{"\"service_tier\"", "\"fail_status_code\"", "\"fail_body\""} {
+		if !strings.Contains(body, field) {
+			t.Fatalf("response missing field %s: %s", field, body)
+		}
 	}
 	if detail.Tokens.InputTokens != 10 || detail.Tokens.OutputTokens != 20 || detail.Tokens.ReasoningTokens != 3 || detail.Tokens.CachedTokens != 4 || detail.Tokens.TotalTokens != 33 {
 		t.Fatalf("tokens = %+v", detail.Tokens)
